@@ -1,0 +1,314 @@
+# -*- coding:utf-8 -*-
+
+import os, sys
+import math
+import traceback
+import pandas as pd
+import numpy as np
+import torch
+from torch.cuda.amp import autocast
+
+from libs.training.trainer import SimpleTrainer, Reporter, LRSchedulerWrapper, logger
+import libs.support.utils as utils
+from .distance import compute_distance_matrix
+
+"""
+This is the structure of Package:
+
+Package(
+    Elements{
+        data:Bunch
+        model:TopVirtualNnet
+        optimizer:Optimizer
+        lr_scheduler:LR_Scheduler
+        },
+
+    Params{
+        model_dir:str
+        exist_model:str
+        start_epoch:int
+        epochs:int
+        ...
+        }
+    )
+
+trainer:
+    self.elements
+    self.params
+    self.training_point(this_epoch, this_iter, data.num_batch_train)
+"""
+
+# Trainer ✿
+
+class Trainer(SimpleTrainer):
+    """One input and one output.
+    """
+    def __init__(self, *args, **kwargs):
+        super(Trainer, self).__init__(*args, **kwargs)
+
+    def train_t_cls_one_batch(self, s_batch, t_batch):
+        """A normal training core without fetching data from iterator.
+        """
+        model = self.elements["model"]
+        model_forward = self.elements["model_forward"]
+        optimizer = self.elements["optimizer"]
+
+        if not model.training:
+            model.train()
+
+        if self.params["nan_debug"]:
+            device = utils.get_device(self.elements["model"])
+            inputs = torch.load("{0}/nan.batch".format(self.params["model_dir"])).to(device)
+            targets = torch.load("{0}/nan.targets".format(self.params["model_dir"])).to(device)
+            self.elements["model"].load_state_dict(
+                torch.load("{0}/nan.params".format(self.params["model_dir"]), map_location="cpu"))
+            self.elements["model"].to(device)
+        else:
+            s_inputs, s_targets = s_batch
+            t_inputs, t_targets = t_batch
+        optimizer.zero_grad()
+
+        # --------------------------------------------------------------------------------------- #
+        inputs = torch.cat((s_inputs, t_inputs))
+        batch_size = s_inputs.size(0)
+        feats = model_forward(inputs)
+        s_feats = feats[:batch_size]
+        t_feats = feats[batch_size:]
+
+        loss_cls = model.get_loss(s_feats, s_targets)
+        loss_t_cls = model.get_t_loss(t_feats, t_targets)
+        loss_mmd_wc, loss_mmd_bc, loss_mmd_wsbt, loss_mmd_bswt = model.get_mmd_loss(s_feats, t_feats)
+        loss_mmd_bc = 2 * loss_mmd_bc
+        loss_mmd_wc = 1 * loss_mmd_wc
+        loss_mmd_wsbt = 0.1 * loss_mmd_wsbt
+        loss_mmd_bswt = 0.05 * loss_mmd_bswt
+        loss = loss_cls + loss_t_cls + loss_mmd_wc + loss_mmd_bc - loss_mmd_wsbt - loss_mmd_bswt
+
+        loss.backward()
+        # --------------------------------------------------------------------------------------- #
+
+        if self.params["max_change"] > 0:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.params["max_change"])
+
+            if math.isnan(grad_norm):
+                if self.params["nan_debug"]:
+                    raise RuntimeError("[NOT OK] Nan is still found in this debug.")
+                torch.save(inputs.cpu(), "{0}/nan.batch".format(self.params["model_dir"]))
+                torch.save(targets.cpu(), "{0}/nan.targets".format(self.params["model_dir"]))
+                torch.save(self.elements["model"].state_dict(), "{0}/nan.params".format(self.params["model_dir"]))
+                raise RuntimeError(
+                    'There is Nan problem in iter/epoch: {0}/{1} '
+                    '(nan batch and params are saved in {2})'.format(
+                        self.training_point[1] + 1, self.training_point[0] + 1,
+                        "{0}/nan.*".format(self.params["model_dir"])))
+            else:
+                if self.params["nan_debug"]:
+                    raise RuntimeError("[OK] There is no nan found for this debug.")
+                optimizer.step()
+        else:
+            optimizer.step()
+
+        # accuracy = model.get_accuracy(s_targets) if self.params["compute_accuracy"] else None
+        accuracy = model.get_t_accuracy(t_targets) if self.params["compute_accuracy"] else None
+
+        return loss_t_cls.detach().item(), loss_mmd_wc.detach().item(), \
+                loss_mmd_bc.detach().item(), loss_mmd_wsbt.detach().item(), \
+                loss_mmd_bswt.detach().item(), accuracy
+
+    def train_one_batch(self, s_batch, t_batch):
+        """A normal training core without fetching data from iterator.
+        """
+        model = self.elements["model"]
+        model_forward = self.elements["model_forward"]
+        optimizer = self.elements["optimizer"]
+
+        if not model.training:
+            model.train()
+
+        if self.params["nan_debug"]:
+            device = utils.get_device(self.elements["model"])
+            inputs = torch.load("{0}/nan.batch".format(self.params["model_dir"])).to(device)
+            targets = torch.load("{0}/nan.targets".format(self.params["model_dir"])).to(device)
+            self.elements["model"].load_state_dict(
+                torch.load("{0}/nan.params".format(self.params["model_dir"]), map_location="cpu"))
+            self.elements["model"].to(device)
+        else:
+            s_inputs, s_targets = s_batch
+            t_inputs, t_targets = t_batch
+        optimizer.zero_grad()
+
+        # --------------------------------------------------------------------------------------- #
+        inputs = torch.cat((s_inputs, t_inputs))
+        batch_size = s_inputs.size(0)
+        feats = model_forward(inputs)
+        s_feats = feats[:batch_size]
+        t_feats = feats[batch_size:]
+
+        loss_cls = model.get_loss(s_feats, s_targets)
+        loss_mmd_wc, loss_mmd_bc, loss_mmd_wsbt, loss_mmd_bswt = model.get_mmd_loss(s_feats, t_feats)
+        loss_mmd_bc = 2 * loss_mmd_bc
+        loss_mmd_wc = 1 * loss_mmd_wc
+        loss_mmd_wsbt = 0.1 * loss_mmd_wsbt
+        loss_mmd_bswt = 0.05 * loss_mmd_bswt
+        loss = loss_cls + loss_mmd_wc + loss_mmd_bc - loss_mmd_wsbt - loss_mmd_bswt
+        loss.backward()
+        # --------------------------------------------------------------------------------------- #
+
+        if self.params["max_change"] > 0:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.params["max_change"])
+
+            if math.isnan(grad_norm):
+                if self.params["nan_debug"]:
+                    raise RuntimeError("[NOT OK] Nan is still found in this debug.")
+                torch.save(inputs.cpu(), "{0}/nan.batch".format(self.params["model_dir"]))
+                torch.save(targets.cpu(), "{0}/nan.targets".format(self.params["model_dir"]))
+                torch.save(self.elements["model"].state_dict(), "{0}/nan.params".format(self.params["model_dir"]))
+                raise RuntimeError(
+                    'There is Nan problem in iter/epoch: {0}/{1} '
+                    '(nan batch and params are saved in {2})'.format(
+                        self.training_point[1] + 1, self.training_point[0] + 1,
+                        "{0}/nan.*".format(self.params["model_dir"])))
+            else:
+                if self.params["nan_debug"]:
+                    raise RuntimeError("[OK] There is no nan found for this debug.")
+                optimizer.step()
+        else:
+            optimizer.step()
+
+        accuracy = model.get_accuracy(s_targets) if self.params["compute_accuracy"] else None
+
+        return loss_cls.detach().item(), loss_mmd_wc.detach().item(), \
+                loss_mmd_bc.detach().item(), loss_mmd_wsbt.detach().item(), \
+                loss_mmd_bswt.detach().item(), accuracy
+
+    def run(self):
+        """Main function to start a training process.
+        """
+        try:
+            self.init_training()
+
+            if utils.is_main_training():
+                self.reporter = Reporter(self)
+
+            start_epoch = self.params["start_epoch"]
+            epochs = self.params["epochs"]
+            data = self.elements["data"]
+            model = self.elements["model"]
+            lr_scheduler = self.elements["lr_scheduler"]
+            base_optimizer = self.elements["optimizer"]
+            best_valid_acc = 0.0
+
+            # For lookahead.
+            if getattr(base_optimizer, "optimizer", None) is not None:
+                base_optimizer = base_optimizer.optimizer
+            last_lr = base_optimizer.state_dict()['param_groups'][0]['lr']
+
+            if utils.is_main_training():
+                logger.info("Training will run for {0} epochs.".format(epochs))
+
+            for this_epoch in range(start_epoch, epochs):
+                for this_iter, (s_batch, t_batch) in enumerate(zip(data.s_train_loader, data.t_train_loader), 0):
+                    self.training_point = (this_epoch, this_iter, data.num_batch_train)  # It is important for reporter.
+
+                    if model.use_step:
+                        model.step(*self.training_point)
+
+                    # loss_cls, loss_wc, loss_bc, loss_wsbt, loss_bswt, acc = self.train_t_cls_one_batch(s_batch, t_batch)
+                    loss_cls, loss_wc, loss_bc, loss_wsbt, loss_bswt, acc = self.train_one_batch(s_batch, t_batch)
+
+                    model.backward_step(*self.training_point)
+
+                    # For multi-GPU training. Remember that it is not convenient to wrap lr_scheduler 
+                    # for there are many strategies with different details. Here, only warmR, ReduceLROnPlateau
+                    # and some simple schedulers whose step() parameter is 'epoch' only are supported.
+                    lr_scheduler_params = {"training_point": self.training_point}
+
+                    valid_computed = False
+                    if lr_scheduler.name == "reduceP" and lr_scheduler.is_reduce_point(self.training_point):
+                        assert data.valid_loader is not None
+                        valid_loss, valid_acc = self.compute_validation(data.valid_loader)
+                        lr_scheduler_params["valid_metric"] = (valid_loss, valid_acc)
+                        valid_computed = True
+
+                    if utils.is_main_training():
+                        if valid_computed or (data.valid_loader and self.reporter.is_report(self.training_point)):
+                            if not valid_computed:
+                                valid_loss, valid_acc = self.compute_validation(data.valid_loader)
+                                valid_computed = False
+
+                            # real_snapshot is set for tensorboard to avoid workspace problem
+                            real_snapshot = {"loss_cls": loss_cls, "loss_wc": loss_wc, "loss_bc": loss_bc,
+                                             "loss_wsbt": loss_wsbt, "loss_bswt": loss_bswt, 
+                                             "valid_loss": valid_loss,
+                                             "train_acc": acc * 100, "valid_acc": valid_acc * 100}
+                            snapshot = {"loss_cls": "{0:.6f}".format(loss_cls),
+                                        "loss_wc": "{0:.6f}".format(loss_wc),
+                                        "loss_bc": "{0:.6f}".format(loss_bc),
+                                        "loss_wsbt": "{0:.6f}".format(loss_wsbt),
+                                        "loss_bswt": "{0:.6f}".format(loss_bswt),
+                                        "valid_loss": "{0:.6f}".format(valid_loss),
+                                        "train_acc": "{0:.2f}".format(acc * 100),
+                                        "valid_acc": "{0:.2f}".format(valid_acc * 100),
+                                        "real": real_snapshot}
+                            # For ReduceLROnPlateau.
+                            lr_scheduler_params["valid_metric"] = (valid_loss, valid_acc)
+
+                            if lr_scheduler.name == "warmR":
+                                if this_epoch >= epochs - 1 and valid_acc >= best_valid_acc:
+                                    best_valid_acc = valid_acc
+                                    if self.params["debug"] is False:
+                                        self.save_model(from_epoch=False)
+                        else:
+                            real_snapshot = {"loss_cls": loss_cls, "loss_wc": loss_wc, "loss_bc": loss_bc,
+                                             "loss_wsbt": loss_wsbt, "loss_bswt": loss_bswt,
+                                             "train_acc": acc * 100}
+                            snapshot = {"loss_cls": "{0:.6f}".format(loss_cls),
+                                        "loss_wc": "{0:.6f}".format(loss_wc),
+                                        "loss_bc": "{0:.6f}".format(loss_bc),
+                                        "loss_wsbt": "{0:.6f}".format(loss_wsbt),
+                                        "loss_bswt": "{0:.6f}".format(loss_bswt),
+                                        "valid_loss": "",
+                                        "train_acc": "{0:.2f}".format(acc * 100), "valid_acc": "",
+                                        "real": real_snapshot}
+
+                    if lr_scheduler is not None:
+                        # It is not convenient to wrap lr_scheduler (doing).
+                        if isinstance(lr_scheduler, LRSchedulerWrapper):
+                            lr_scheduler.step(**lr_scheduler_params)
+                            if utils.is_main_training():
+                                current_lr = base_optimizer.state_dict()['param_groups'][0]['lr']
+                                if lr_scheduler.name == "reduceP":
+                                    if current_lr < last_lr:
+                                        last_lr = current_lr
+                                        if self.params["debug"] is False:
+                                            self.save_model(from_epoch=False)
+                                    elif current_lr <= lr_scheduler.min_lr and \
+                                            lr_scheduler.is_reduce_point(self.training_point) and self.params["debug"] is False:
+                                        self.save_model(from_epoch=False)
+                                elif lr_scheduler.name == "cyclic" and utils.is_main_training():
+                                    cyclic_size = lr_scheduler.lr_scheduler.total_size
+                                    current_iter = self.training_point[0] * self.training_point[2] + self.training_point[1] + 1
+                                    if current_iter % cyclic_size == 0 and current_iter != 1 and self.params["debug"] is False:
+                                        self.save_model(from_epoch=False)
+                        else:
+                            # For some pytorch lr_schedulers, but it is not available for all.
+                            lr_scheduler.step(this_epoch)
+                    if utils.is_main_training():
+                        self.reporter.update(snapshot)
+                if utils.is_main_training():
+                    if self.params["debug"] is False:
+                        self.save_model()
+                    print(loss_cls, loss_wc, loss_bc)
+
+            if utils.is_main_training():
+                self.reporter.finish()
+        except BaseException as e:
+            if utils.use_ddp():
+                utils.cleanup_ddp()
+            if not isinstance(e, KeyboardInterrupt):
+                traceback.print_exc()
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    pass

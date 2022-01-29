@@ -3,10 +3,20 @@
 ## 1. Dependencies
 ```bash
 conda env create -f environment.yml
+
+# computation environments
+kaldi
+python>=3.8
+cuda=11.0.3
+pytorch=1.7.1
 ```
 
 ## 2. Install ASV-subtools & Kaldi
 Please refer to the installation details in https://github.com/matln/asv-subtools#ready-to-start.
+
+```bash
+git clone -b CDMA https://github.com/matln/asv-subtools
+```
 
 Change to your own Kaldi & ASV-subtools path in `path.sh`.
 

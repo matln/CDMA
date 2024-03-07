@@ -1,0 +1,5 @@
+# yamllint disable
+ValidAcc: 0.934814453125
+ValidLoss: 0.4176598899066448
+end-of-epoch: true
+unixtime: 1668975840.0184476

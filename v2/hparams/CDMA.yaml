@@ -1,0 +1,177 @@
+# -------------------------------------------------------------------------------------- #
+# Set seed
+seed: 1024
+benchmark: True    # If true, save training time but require a little more gpu-memory.
+
+# Feature parameters
+features: "fbank"
+n_mels: 80
+
+# Warm up
+warmup_epoch: "0"
+increase_start_epoch: "0"
+unfreeze_epoch: "0"
+
+# batch_size: 168
+batch_size: 128
+num_samples_cls: 4
+# mode: "CSDA"
+mode: "hard_sample"
+# mode: "emb_mmd"
+
+# -------------------------------------------------------------------------------------- #
+# Training options
+
+egs_dir:
+    - "exp/egs/vox2_4s"
+    - "exp/egs/voices_train_pseudo"
+
+
+dataset_params:
+    duration: 4.0
+    samplerate: 16000
+    frame_overlap: 0.015
+    random_segment: False
+    delimiter: ","
+    source_aug: True
+    source_aug_conf: "hparams/speech_aug_random.yaml"
+    s_target_num_multiplier: 3
+    target_aug: True
+    target_aug_conf: "hparams/speech_aug_random.yaml"
+
+loader_params:
+    num_workers: 8
+    pin_memory: True
+    batch_size: !ref <batch_size>
+    prefetch_factor: 2
+    speaker_aware_sample: True
+    num_samples_cls: !ref <num_samples_cls>
+    seed: !ref <seed>
+
+encoder_params:
+    batch_size: !ref <batch_size>
+    num_chunks: !ref <num_samples_cls>
+    mode: !ref <mode>
+    dropout: 0.
+    training: True
+    extracted_embedding: "near"
+    resnet_params:
+        head_conv: True
+        head_conv_params: {kernel_size: 3, stride: 1, padding: 1}
+        head_maxpool: False
+        head_maxpool_params: {kernel_size: 3, stride: 2, padding: 1}
+        block: "BasicBlock"
+        layers: [3, 4, 6, 3]
+        planes: [32, 64, 128, 256]
+        convXd: 2
+        norm_layer_params: {momentum: 0.5, affine: True}
+        full_pre_activation: True
+        zero_init_residual: False
+
+    pooling: "multi-head"  # statistics, lde, attentive, multi-head, multi-resolution
+    pooling_params:
+        num_head: 16
+        share: True
+        affine_layers: 1
+        hidden_size: 64
+        context: [0]
+        stddev: True
+        temperature: False
+        fixed: True
+
+    # Add fc1 will boost the minDCF
+    fc1: False
+    fc1_params:
+        nonlinearity: 'relu'
+        nonlinearity_params: {inplace: True}
+        bn-relu: False
+        bn: True
+        bn_params: {momentum: 0.5, affine: False, track_running_stats: True}
+
+    fc2_params:
+        nonlinearity: ''
+        nonlinearity_params: {inplace: True}
+        bn-relu: False
+        bn: True
+        bn_params: {momentum: 0.5, affine: False, track_running_stats: True}
+
+    criterion: "margin_loss"
+    # criterion: "softmaxproto"
+    margin_loss_params:
+        method: "am"
+        m: 0.2
+        s: 35
+        easy_margin: False
+
+    label_smoothing: 0.1
+
+    use_step: True
+    step_params:
+        T: null
+        m: True
+        lambda_0: 0
+        lambda_b: 1000
+        increase_start_epoch: !ref <increase_start_epoch>
+        alpha: 5
+        gamma: 0.0001
+        s: False
+        s_tuple: (30, 12)
+        s_list: null
+        t: False
+        t_tuple: (0.5, 1.2)
+
+optimizer_params:
+    name: "sgd"
+    learn_rate: 0.001
+    beta1: 0.9
+    weight_decay: 0.0001
+    nesterov: True
+
+lr_scheduler_params:
+    name: "IterMultiStepLR"
+    MultiStepLR.milestones: [5, 10, 15]
+    MultiStepLR.gamma: 0.1
+    IterMultiStepLR.milestones: [7000, 14000, 28000]
+    IterMultiStepLR.gamma: 0.1
+    stepLR.step_size: 1
+    stepLR.gamma: 0.9
+    warmR.lr_decay_step: 1   # 0 means decay after every epoch and 1 means every iter. 
+    warmR.T_max: 10
+    warmR.T_mult: 1
+    warmR.factor: 1.0    # The max_lr_decay_factor.
+    warmR.eta_min: 0.000001
+    warmR.log_decay: False
+    reduceP.metric: 'valid_loss'
+    reduceP.check_interval: 16000  # 0 means check metric after every epoch and 1 means every iter.
+    reduceP.factor: 0.1  # scale of lr in every times.
+    reduceP.patience: 2
+    reduceP.threshold: 0.0001
+    reduceP.cooldown: 0
+    reduceP.min_lr: 0.000001
+    warmup_epoch: !ref <warmup_epoch>
+
+# -------------------------------------------------------------------------------------- #
+# Modules
+encoder: local/pytorch/resnet.py
+trainer: local/pytorch/trainer.py
+bunch: local/pytorch/bunch.py
+
+# -------------------------------------------------------------------------------------- #
+# Control options
+epochs: 30    # Total epochs to train. It is important.
+saved_step: 2000
+report_times_every_epoch: null
+# About validation computation and loss reporting. If report_times_every_epoch is not None,
+report_interval_iters: 100
+ckpt_interval_minutes: 10 # save checkpoint every N min
+# then compute report_interval_iters by report_times_every_epoch.
+stop_early: False
+exist_encoder: 'exp/pretrain/2022-11-19_17:34:35/checkpoints/epoch+19/encoder.ckpt'  # Use it in transfer learning.
+
+# -------------------------------------------------------------------------------------- #
+# Extract embeddings
+extract_positions: "near"
+extract_data: "voxceleb1"
+data_path: "data"  # It contains all dataset just like Kaldi recipe.
+force: False
+sleep_time: 60

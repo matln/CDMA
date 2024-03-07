@@ -1,0 +1,167 @@
+# yamllint disable
+
+# -------------------------------------------------------------------------------------- #
+# Set seed
+seed: 1024
+benchmark: true    # If true, save training time but require a little more gpu-memory.
+
+# Feature parameters
+features: fbank
+n_mels: 80
+
+warmup_epoch: 1
+increase_start_epoch: 1
+
+# -------------------------------------------------------------------------------------- #
+# Training options
+egs_dir:
+- exp/egs/waveform_2s
+
+dataset_params:
+  duration: 2.0
+  samplerate: 16000
+  frame_overlap: 0.015
+  random_segment: false
+  delimiter: ','
+  aug: true
+  aug_conf: exp/pretrain/2022-11-19_17:34:35/config/augmentation.yaml
+
+loader_params:
+  num_workers: 16
+  pin_memory: true
+  batch_size: 256
+  speaker_aware_sample: false
+  num_samples_cls: 8
+  seed: 1024
+
+encoder_params:
+  dropout: 0.
+  training: true
+  extracted_embedding: near
+  resnet_params:
+    head_conv: true
+    head_conv_params: {kernel_size: 3, stride: 1, padding: 1}
+    head_maxpool: false
+    head_maxpool_params: {kernel_size: 3, stride: 2, padding: 1}
+    block: BasicBlock
+    layers: [3, 4, 6, 3]
+    planes: [32, 64, 128, 256]
+    convXd: 2
+    norm_layer_params: {momentum: 0.5, affine: true}
+    full_pre_activation: true
+    zero_init_residual: false
+
+  pooling: multi-head      # statistics, lde, attentive, multi-head, multi-resolution
+  pooling_params:
+    num_head: 16
+    share: true
+    affine_layers: 1
+    hidden_size: 64
+    context: [0]
+    stddev: true
+    temperature: false
+    fixed: true
+
+    # Add fc1 will boost the minDCF
+  fc1: false
+  fc1_params:
+    nonlinearity: relu
+    nonlinearity_params: {inplace: true}
+    bn-relu: false
+    bn: true
+    bn_params: {momentum: 0.5, affine: false, track_running_stats: true}
+
+  fc2_params:
+    nonlinearity: ''
+    nonlinearity_params: {inplace: true}
+    bn-relu: false
+    bn: true
+    bn_params: {momentum: 0.5, affine: false, track_running_stats: true}
+
+  margin_loss: true
+  margin_loss_params:
+    method: am
+    m: 0.2
+    feature_normalize: true
+    s: 35
+    easy_margin: false
+
+  use_step: true
+  step_params:
+    T:
+    m: true
+    lambda_0: 0
+    lambda_b: 1000
+    increase_start_epoch: 1
+    alpha: 5
+    gamma: 0.0001
+    s: false
+    s_tuple: (30, 12)
+    s_list:
+    t: false
+    t_tuple: (0.5, 1.2)
+
+optimizer_params:
+  name: sgd
+  learn_rate: 0.02
+  beta1: 0.9
+  weight_decay: 0.0001
+  nesterov: true
+
+lr_scheduler_params:
+  name: MultiStepLR
+  MultiStepLR.milestones: [15, 25, 35]
+  MultiStepLR.gamma: 0.1
+  stepLR.step_size: 1
+  stepLR.gamma: 0.9
+  warmR.lr_decay_step: 1     # 0 means decay after every epoch and 1 means every iter. 
+  warmR.T_max: 10
+  warmR.T_mult: 1
+  warmR.factor: 1.0      # The max_lr_decay_factor.
+  warmR.eta_min: 0.000001
+  warmR.log_decay: false
+  reduceP.metric: valid_loss
+  reduceP.check_interval: 16000    # 0 means check metric after every epoch and 1 means every iter.
+  reduceP.factor: 0.1    # scale of lr in every times.
+  reduceP.patience: 2
+  reduceP.threshold: 0.0001
+  reduceP.cooldown: 0
+  reduceP.min_lr: 0.000001
+  ExponentialDecay.final_lr: 0.00001
+  ExponentialDecay.num_epochs: 40
+  warmup_epoch: 1
+
+# -------------------------------------------------------------------------------------- #
+# Modules
+encoder: speakernet/models/resnet.py
+trainer: speakernet/training/trainer.py
+bunch: speakernet/dataio/bunch.py
+
+# -------------------------------------------------------------------------------------- #
+# Control options
+epochs: 40    # Total epochs to train. It is important.
+saved_step: 150000000
+report_times_every_epoch:
+# About validation computation and loss reporting. If report_times_every_epoch is not None,
+report_interval_iters: 1000
+ckpt_interval_minutes: 10 # save checkpoint every N min
+# then compute report_interval_iters by report_times_every_epoch.
+stop_early: false
+compute_one_batch_valid: false
+exist_encoder: ''  # Use it in transfer learning.
+
+# -------------------------------------------------------------------------------------- #
+# Extract embeddings
+extract_positions: near
+extract_data: voxceleb1
+data_path: data    # It contains all dataset just like Kaldi recipe.
+preprocess: true
+force: false
+sleep_time: 60
+cmn: true
+fixed_length_params:
+  chunk_size: -1
+  egs_type: chunk
+  batch_size: 512
+  num_workers: 2
+  pin_memory: 'false'

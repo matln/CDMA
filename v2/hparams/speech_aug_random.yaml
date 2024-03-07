@@ -1,0 +1,47 @@
+mod: random
+aug_classes:
+    - 
+        aug_name: add_noise  # Define the speeech augment name 
+        aug_type: Env        # Env or Time
+        random_mod_weight: 1
+        noise_prob: 1.0
+        noise_snr_low: 5
+        noise_snr_high: 15
+        noise_csv: exp/aug_csv/combine_music_noise.csv
+        scale: True
+        pad_noise: "wrap"
+
+    - 
+        aug_name: add_babble_noise
+        aug_type: Env
+        random_mod_weight: 0.5
+        babble_prob: 1.0
+        babble_speaker_count_low: 4
+        babble_speaker_count_high: 4
+        babble_snr_low: 13
+        babble_snr_high: 20
+        babble_csv: exp/aug_csv/musan_speech.csv
+        scale: True
+        pad_noise: "wrap"
+
+    -
+        aug_name: add_rev
+        aug_type: Env
+        random_mod_weight: 0.8
+        reverb_prob: 1.0
+        reverb_csv: exp/aug_csv/combine_sim_small_medium_rev.csv
+        rir_scale_factor: 1.0
+
+    -
+        aug_name: add_rev_noise
+        aug_type: Env
+        random_mod_weight: 0.8
+        reverb_prob: 1.0
+        noise_prob: 0.5
+        noise_snr_low: 0
+        noise_snr_high: 15
+        noise_csv: exp/aug_csv/pointsrc_noise.csv
+        reverb_csv: exp/aug_csv/real_reverb.csv
+        rir_scale_factor: 1.0
+        scale: True
+        pad_noise: "wrap"
